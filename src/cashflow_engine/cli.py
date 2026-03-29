@@ -24,8 +24,14 @@ def main() -> None:
     elif cmd == "run":
         result = engine.run_cycle()
         print(json.dumps(result, indent=2))
+    elif cmd == "serve":
+        import uvicorn
+
+        host = sys.argv[2] if len(sys.argv) > 2 else "0.0.0.0"
+        port = int(sys.argv[3]) if len(sys.argv) > 3 else 8000
+        uvicorn.run("cashflow_engine.api.app:app", host=host, port=port, reload=False)
     else:
-        print(f"Unknown command: {cmd}. Use 'status' or 'run'.", file=sys.stderr)
+        print(f"Unknown command: {cmd}. Use 'status', 'run', or 'serve'.", file=sys.stderr)
         sys.exit(1)
 
 
