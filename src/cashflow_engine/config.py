@@ -32,3 +32,6 @@ class EngineConfig(BaseModel):
     trading: TradingConfig = TradingConfig()
     arbitrage: ArbitrageConfig = ArbitrageConfig()
     subscriptions: SubscriptionConfig = SubscriptionConfig()
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
+    )
