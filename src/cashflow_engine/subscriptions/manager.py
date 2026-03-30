@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import stripe
 import structlog
 
 from cashflow_engine.config import SubscriptionConfig
 
 log = structlog.get_logger(__name__)
+
+_DEFAULT_SUBSCRIPTIONS_PATH = "data/subscriptions.json"
 
 
 class StripeClient:
@@ -37,10 +43,24 @@ class StripeClient:
 class SubscriptionManager:
     def __init__(self, config: SubscriptionConfig) -> None:
         self.config = config
-        self._subscribers: list[dict] = []
+        self._path = Path(os.environ.get("SUBSCRIPTIONS_DB_PATH", _DEFAULT_SUBSCRIPTIONS_PATH))
         self._stripe: StripeClient | None = (
             StripeClient(config.stripe_secret_key) if config.stripe_secret_key else None
         )
+        self._subscribers: list[dict] = self._load()
+
+    def _load(self) -> list[dict]:
+        if not self._path.exists():
+            return []
+        with self._path.open() as f:
+            return json.load(f)
+
+    def _save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".tmp")
+        with tmp.open("w") as f:
+            json.dump(self._subscribers, f, default=str, indent=2)
+        os.replace(tmp, self._path)
 
     def status(self) -> dict:
         return {"enabled": self.config.enabled, "subscriber_count": len(self._subscribers)}
@@ -61,18 +81,19 @@ class SubscriptionManager:
                 log.exception("stripe_create_customer_failed", subscriber_id=subscriber_id)
         self._subscribers.append(record)
         log.info("subscriber_added", subscriber_id=subscriber_id)
+        self._save()
         return record
 
     def process_renewals(self) -> dict:
         log.info("processing_renewals", count=len(self._subscribers))
-        if not self._stripe:
-            return {"renewed": 0, "failed": 0, "total": len(self._subscribers)}
 
         renewed = 0
         failed = 0
         for subscriber in self._subscribers:
             sub_id = subscriber.get("stripe_subscription_id")
             if sub_id:
+                if not self._stripe:
+                    continue
                 try:
                     subscription = self._stripe.get_subscription(sub_id)
                     if subscription["status"] in ("active", "trialing"):
@@ -89,23 +110,27 @@ class SubscriptionManager:
                         "stripe_get_subscription_failed", subscriber_id=subscriber["id"]
                     )
                     failed += 1
-            elif (
-                subscriber.get("stripe_customer_id")
-                and subscriber.get("trial_days_remaining", 1) <= 0
-                and self.config.stripe_price_id_pro
-            ):
-                try:
-                    new_sub_id = self._stripe.create_subscription(
-                        subscriber["stripe_customer_id"],
-                        self.config.stripe_price_id_pro,
-                    )
-                    subscriber["stripe_subscription_id"] = new_sub_id
-                    renewed += 1
-                    log.info("subscription_created", subscriber_id=subscriber["id"])
-                except Exception:
-                    log.exception(
-                        "stripe_create_subscription_failed", subscriber_id=subscriber["id"]
-                    )
-                    failed += 1
+            else:
+                subscriber["trial_days_remaining"] = subscriber.get("trial_days_remaining", 0) - 1
+                if (
+                    self._stripe
+                    and subscriber.get("stripe_customer_id")
+                    and subscriber["trial_days_remaining"] == 0
+                    and self.config.stripe_price_id_pro
+                ):
+                    try:
+                        new_sub_id = self._stripe.create_subscription(
+                            subscriber["stripe_customer_id"],
+                            self.config.stripe_price_id_pro,
+                        )
+                        subscriber["stripe_subscription_id"] = new_sub_id
+                        renewed += 1
+                        log.info("subscription_created", subscriber_id=subscriber["id"])
+                    except Exception:
+                        log.exception(
+                            "stripe_create_subscription_failed", subscriber_id=subscriber["id"]
+                        )
+                        failed += 1
 
+        self._save()
         return {"renewed": renewed, "failed": failed, "total": len(self._subscribers)}
