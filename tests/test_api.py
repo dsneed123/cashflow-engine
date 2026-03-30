@@ -14,7 +14,11 @@ def test_health():
 
 
 def test_status():
-    resp = client.get("/status")
+    client.post("/auth/register", json={"email": "status_test@example.com", "password": "testpass"})
+    token = client.post(
+        "/auth/login", json={"email": "status_test@example.com", "password": "testpass"}
+    ).json()["access_token"]
+    resp = client.get("/status", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     data = resp.json()
     assert "trading" in data

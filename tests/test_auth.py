@@ -90,3 +90,16 @@ def test_run_cycle_with_auth():
     resp = client.post("/run-cycle", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
+
+
+def test_status_requires_auth():
+    resp = client.get("/status")
+    assert resp.status_code == 401
+
+
+def test_status_with_auth():
+    _register("h@test.com")
+    token = _login_token("h@test.com")
+    resp = client.get("/status", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), dict)
