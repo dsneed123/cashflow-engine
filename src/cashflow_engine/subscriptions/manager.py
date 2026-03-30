@@ -13,7 +13,7 @@ from cashflow_engine.config import SubscriptionConfig
 
 log = structlog.get_logger(__name__)
 
-_DEFAULT_SUBSCRIPTIONS_PATH = "data/subscriptions.json"
+_DEFAULT_SUBSCRIPTIONS_PATH = "data/subscribers.json"
 
 
 class StripeClient:
@@ -146,3 +146,54 @@ class SubscriptionManager:
 
         self._save()
         return {"renewed": renewed, "failed": failed, "total": len(self._subscribers)}
+
+    def create_checkout_session(self, subscriber_id: str, price_id: str) -> str:
+        if not self._stripe:
+            raise ValueError("Stripe not configured")
+        subscriber = next((s for s in self._subscribers if s["id"] == subscriber_id), None)
+        if subscriber is None:
+            raise ValueError(f"Subscriber {subscriber_id!r} not found")
+        customer_id = subscriber.get("stripe_customer_id")
+        if not customer_id:
+            raise ValueError(f"Subscriber {subscriber_id!r} has no Stripe customer")
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+        return self._stripe.create_checkout_session(
+            customer_id,
+            price_id,
+            success_url=f"{frontend_url}/billing/success",
+            cancel_url=f"{frontend_url}/billing/cancel",
+        )
+
+    def handle_webhook(self, payload: bytes, sig_header: str) -> dict:
+        webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+        if not webhook_secret:
+            raise ValueError("STRIPE_WEBHOOK_SECRET not configured")
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        except Exception as exc:
+            raise ValueError(f"Webhook signature verification failed: {exc}") from exc
+
+        event_type = event["type"]
+        event_data = event["data"]["object"]
+
+        if event_type == "checkout.session.completed":
+            customer_id = event_data.get("customer")
+            subscription_id = event_data.get("subscription")
+            if customer_id and subscription_id:
+                for subscriber in self._subscribers:
+                    if subscriber.get("stripe_customer_id") == customer_id:
+                        subscriber["stripe_subscription_id"] = subscription_id
+                        log.info("checkout_session_completed", subscriber_id=subscriber["id"])
+                        break
+                self._save()
+        elif event_type == "customer.subscription.deleted":
+            subscription_id = event_data.get("id")
+            if subscription_id:
+                for subscriber in self._subscribers:
+                    if subscriber.get("stripe_subscription_id") == subscription_id:
+                        subscriber["stripe_subscription_id"] = None
+                        log.info("subscription_deleted", subscriber_id=subscriber["id"])
+                        break
+                self._save()
+
+        return {"status": "handled", "event_type": event_type}
