@@ -17,7 +17,8 @@ def _register_and_login(email: str, tier: str = "free") -> str:
     return _client.post("/auth/login", json={"email": email, "password": "testpass"}).json()["access_token"]
 
 
-def test_add_subscriber():
+def test_add_subscriber(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mgr = SubscriptionManager(SubscriptionConfig(trial_days=7))
     record = mgr.add_subscriber("user-1")
     assert record["id"] == "user-1"
@@ -25,7 +26,8 @@ def test_add_subscriber():
     assert mgr.status()["subscriber_count"] == 1
 
 
-def test_add_subscriber_includes_stripe_fields():
+def test_add_subscriber_includes_stripe_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mgr = SubscriptionManager(SubscriptionConfig())
     record = mgr.add_subscriber("user-1")
     assert "stripe_customer_id" in record
@@ -34,13 +36,15 @@ def test_add_subscriber_includes_stripe_fields():
     assert record["stripe_subscription_id"] is None
 
 
-def test_process_renewals_empty():
+def test_process_renewals_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mgr = SubscriptionManager(SubscriptionConfig())
     result = mgr.process_renewals()
     assert result == {"renewed": 0, "failed": 0, "total": 0}
 
 
-def test_process_renewals_with_subscribers():
+def test_process_renewals_with_subscribers(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mgr = SubscriptionManager(SubscriptionConfig())
     mgr.add_subscriber("a")
     mgr.add_subscriber("b")
@@ -48,7 +52,8 @@ def test_process_renewals_with_subscribers():
     assert result["total"] == 2
 
 
-def test_process_renewals_no_stripe_returns_zeros():
+def test_process_renewals_no_stripe_returns_zeros(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mgr = SubscriptionManager(SubscriptionConfig(stripe_secret_key=None))
     mgr.add_subscriber("user-1")
     result = mgr.process_renewals()
@@ -56,7 +61,8 @@ def test_process_renewals_no_stripe_returns_zeros():
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_add_subscriber_creates_stripe_customer(mock_stripe_cls):
+def test_add_subscriber_creates_stripe_customer(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.create_customer.return_value = "cus_test123"
     mock_stripe_cls.return_value = mock_stripe
@@ -69,7 +75,8 @@ def test_add_subscriber_creates_stripe_customer(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_add_subscriber_no_email_skips_stripe(mock_stripe_cls):
+def test_add_subscriber_no_email_skips_stripe(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe_cls.return_value = mock_stripe
 
@@ -81,7 +88,8 @@ def test_add_subscriber_no_email_skips_stripe(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_active_subscription_counts_renewed(mock_stripe_cls):
+def test_process_renewals_active_subscription_counts_renewed(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.get_subscription.return_value = {"status": "active"}
     mock_stripe_cls.return_value = mock_stripe
@@ -97,7 +105,8 @@ def test_process_renewals_active_subscription_counts_renewed(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_trialing_subscription_counts_renewed(mock_stripe_cls):
+def test_process_renewals_trialing_subscription_counts_renewed(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.get_subscription.return_value = {"status": "trialing"}
     mock_stripe_cls.return_value = mock_stripe
@@ -112,7 +121,8 @@ def test_process_renewals_trialing_subscription_counts_renewed(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_past_due_subscription_counts_failed(mock_stripe_cls):
+def test_process_renewals_past_due_subscription_counts_failed(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.get_subscription.return_value = {"status": "past_due"}
     mock_stripe_cls.return_value = mock_stripe
@@ -127,7 +137,8 @@ def test_process_renewals_past_due_subscription_counts_failed(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_stripe_exception_counts_failed(mock_stripe_cls):
+def test_process_renewals_stripe_exception_counts_failed(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.get_subscription.side_effect = Exception("Network error")
     mock_stripe_cls.return_value = mock_stripe
@@ -142,7 +153,8 @@ def test_process_renewals_stripe_exception_counts_failed(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_overdue_trial_creates_subscription(mock_stripe_cls):
+def test_process_renewals_overdue_trial_creates_subscription(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.create_customer.return_value = "cus_test123"
     mock_stripe.create_subscription.return_value = "sub_new123"
@@ -152,7 +164,7 @@ def test_process_renewals_overdue_trial_creates_subscription(mock_stripe_cls):
         SubscriptionConfig(stripe_secret_key="sk_test", stripe_price_id_pro="price_pro")
     )
     subscriber = mgr.add_subscriber("user-1", email="user@example.com", name="Test")
-    subscriber["trial_days_remaining"] = 0
+    subscriber["trial_days_remaining"] = 1
 
     result = mgr.process_renewals()
     mock_stripe.create_subscription.assert_called_once_with("cus_test123", "price_pro")
@@ -162,7 +174,8 @@ def test_process_renewals_overdue_trial_creates_subscription(mock_stripe_cls):
 
 
 @patch("cashflow_engine.subscriptions.manager.StripeClient")
-def test_process_renewals_overdue_trial_create_fails_counts_failed(mock_stripe_cls):
+def test_process_renewals_overdue_trial_create_fails_counts_failed(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
     mock_stripe = MagicMock()
     mock_stripe.create_customer.return_value = "cus_test123"
     mock_stripe.create_subscription.side_effect = Exception("Card declined")
@@ -172,7 +185,7 @@ def test_process_renewals_overdue_trial_create_fails_counts_failed(mock_stripe_c
         SubscriptionConfig(stripe_secret_key="sk_test", stripe_price_id_pro="price_pro")
     )
     subscriber = mgr.add_subscriber("user-1", email="user@example.com", name="Test")
-    subscriber["trial_days_remaining"] = 0
+    subscriber["trial_days_remaining"] = 1
 
     result = mgr.process_renewals()
     assert result["renewed"] == 0
