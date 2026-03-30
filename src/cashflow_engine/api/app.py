@@ -7,6 +7,7 @@ import threading
 import time
 from collections import deque
 
+import stripe
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -161,8 +162,15 @@ async def billing_webhook(
     if not stripe_signature:
         raise HTTPException(status_code=400, detail="Stripe-Signature header required")
     payload = await request.body()
+    webhook_secret = _engine.subscriptions.config.stripe_webhook_secret
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET not configured")
     try:
-        result = _engine.subscriptions.handle_webhook(payload, stripe_signature)
+        event = stripe.Webhook.construct_event(payload, stripe_signature, webhook_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Webhook signature verification failed: {exc}")
+    try:
+        result = _engine.subscriptions.handle_webhook(event)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return result

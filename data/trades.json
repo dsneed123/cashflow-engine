@@ -97,5 +97,71 @@
     "exchange": "binance",
     "dry_run": true,
     "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:31.899483+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "buy",
+    "amount": 0.02,
+    "price": 50000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:31.901083+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "buy",
+    "amount": 0.01818181818181818,
+    "price": 55000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:31.902276+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "sell",
+    "amount": 0.022222222222222223,
+    "price": 45000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:51.119288+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "buy",
+    "amount": 0.02,
+    "price": 50000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:51.120588+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "buy",
+    "amount": 0.01818181818181818,
+    "price": 55000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
+  },
+  {
+    "timestamp": "2026-03-30T01:36:51.121866+00:00",
+    "module": "trading",
+    "symbol": "BTC/USDT",
+    "side": "sell",
+    "amount": 0.022222222222222223,
+    "price": 45000.0,
+    "exchange": "binance",
+    "dry_run": true,
+    "order_id": "dry-run"
   }
 ]
