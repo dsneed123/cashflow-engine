@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from cashflow_engine.auth import models as auth_models
 from cashflow_engine.auth.router import get_current_user, require_tier, router as auth_router
 from cashflow_engine.core.engine import CashflowEngine
+from cashflow_engine.core.trade_log import read_trades
 from cashflow_engine.subscriptions.router import router as subscriptions_router
 
 app = FastAPI(title="Cashflow Engine", version="0.1.0")
@@ -111,6 +112,16 @@ def status(_: auth_models.User = Depends(get_current_user)) -> dict:
 @app.post("/run-cycle")
 def run_cycle(_: auth_models.User = Depends(require_tier("pro"))) -> dict:
     return _engine.run_cycle()
+
+
+@app.get("/trades")
+def get_trades(
+    limit: int = 50,
+    offset: int = 0,
+    _: auth_models.User = Depends(get_current_user),
+) -> dict:
+    trades = read_trades(limit=limit, offset=offset)
+    return {"trades": trades, "limit": limit, "offset": offset}
 
 
 # ---------------------------------------------------------------------------
