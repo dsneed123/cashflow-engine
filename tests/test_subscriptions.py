@@ -380,29 +380,9 @@ def test_create_checkout_session_returns_url(mock_stripe_cls, tmp_path, monkeypa
 # --- SubscriptionManager.handle_webhook tests ---
 
 
-def test_handle_webhook_no_secret(tmp_path, monkeypatch):
+def test_handle_webhook_checkout_session_completed(tmp_path, monkeypatch):
     monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
-    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
-    mgr = SubscriptionManager(SubscriptionConfig())
-    with pytest.raises(ValueError, match="STRIPE_WEBHOOK_SECRET"):
-        mgr.handle_webhook(b"{}", "t=1,v1=sig")
-
-
-@patch("cashflow_engine.subscriptions.manager.stripe")
-def test_handle_webhook_invalid_signature(mock_stripe, tmp_path, monkeypatch):
-    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    mock_stripe.Webhook.construct_event.side_effect = Exception("No signatures found")
-    mgr = SubscriptionManager(SubscriptionConfig())
-    with pytest.raises(ValueError, match="signature"):
-        mgr.handle_webhook(b"{}", "invalid_sig")
-
-
-@patch("cashflow_engine.subscriptions.manager.stripe")
-def test_handle_webhook_checkout_session_completed(mock_stripe, tmp_path, monkeypatch):
-    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    mock_stripe.Webhook.construct_event.return_value = {
+    event = {
         "type": "checkout.session.completed",
         "data": {"object": {"customer": "cus_test123", "subscription": "sub_new123"}},
     }
@@ -415,17 +395,15 @@ def test_handle_webhook_checkout_session_completed(mock_stripe, tmp_path, monkey
         "stripe_subscription_id": None,
     })
 
-    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+    result = mgr.handle_webhook(event)
 
     assert result == {"status": "handled", "event_type": "checkout.session.completed"}
     assert mgr._subscribers[0]["stripe_subscription_id"] == "sub_new123"
 
 
-@patch("cashflow_engine.subscriptions.manager.stripe")
-def test_handle_webhook_subscription_deleted(mock_stripe, tmp_path, monkeypatch):
+def test_handle_webhook_subscription_deleted(tmp_path, monkeypatch):
     monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    mock_stripe.Webhook.construct_event.return_value = {
+    event = {
         "type": "customer.subscription.deleted",
         "data": {"object": {"id": "sub_test123", "customer": "cus_test123"}},
     }
@@ -438,23 +416,21 @@ def test_handle_webhook_subscription_deleted(mock_stripe, tmp_path, monkeypatch)
         "stripe_subscription_id": "sub_test123",
     })
 
-    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+    result = mgr.handle_webhook(event)
 
     assert result == {"status": "handled", "event_type": "customer.subscription.deleted"}
     assert mgr._subscribers[0]["stripe_subscription_id"] is None
 
 
-@patch("cashflow_engine.subscriptions.manager.stripe")
-def test_handle_webhook_unknown_event_ignored(mock_stripe, tmp_path, monkeypatch):
+def test_handle_webhook_unknown_event_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    mock_stripe.Webhook.construct_event.return_value = {
+    event = {
         "type": "payment_intent.created",
         "data": {"object": {}},
     }
 
     mgr = SubscriptionManager(SubscriptionConfig())
-    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+    result = mgr.handle_webhook(event)
 
     assert result["status"] == "handled"
     assert result["event_type"] == "payment_intent.created"
@@ -515,9 +491,11 @@ def test_billing_webhook_missing_signature():
     assert "Stripe-Signature" in resp.json()["detail"]
 
 
+@patch("cashflow_engine.api.app.stripe")
 @patch("cashflow_engine.api.app._engine")
-def test_billing_webhook_invalid_signature(mock_engine):
-    mock_engine.subscriptions.handle_webhook.side_effect = ValueError("Webhook signature verification failed")
+def test_billing_webhook_invalid_signature(mock_engine, mock_stripe):
+    mock_engine.subscriptions.config.stripe_webhook_secret = "whsec_test"
+    mock_stripe.Webhook.construct_event.side_effect = Exception("No signatures found")
     resp = _client.post(
         "/billing/webhook",
         content=b"{}",
@@ -527,8 +505,15 @@ def test_billing_webhook_invalid_signature(mock_engine):
     assert "signature" in resp.json()["detail"].lower()
 
 
+@patch("cashflow_engine.api.app.stripe")
 @patch("cashflow_engine.api.app._engine")
-def test_billing_webhook_checkout_completed(mock_engine):
+def test_billing_webhook_checkout_completed(mock_engine, mock_stripe):
+    event_dict = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_test", "subscription": "sub_test"}},
+    }
+    mock_engine.subscriptions.config.stripe_webhook_secret = "whsec_test"
+    mock_stripe.Webhook.construct_event.return_value = event_dict
     mock_engine.subscriptions.handle_webhook.return_value = {
         "status": "handled",
         "event_type": "checkout.session.completed",
@@ -541,11 +526,19 @@ def test_billing_webhook_checkout_completed(mock_engine):
     )
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "checkout.session.completed"
-    mock_engine.subscriptions.handle_webhook.assert_called_once_with(payload, "t=123,v1=abc")
+    mock_stripe.Webhook.construct_event.assert_called_once_with(payload, "t=123,v1=abc", "whsec_test")
+    mock_engine.subscriptions.handle_webhook.assert_called_once_with(event_dict)
 
 
+@patch("cashflow_engine.api.app.stripe")
 @patch("cashflow_engine.api.app._engine")
-def test_billing_webhook_subscription_deleted(mock_engine):
+def test_billing_webhook_subscription_deleted(mock_engine, mock_stripe):
+    event_dict = {
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_test"}},
+    }
+    mock_engine.subscriptions.config.stripe_webhook_secret = "whsec_test"
+    mock_stripe.Webhook.construct_event.return_value = event_dict
     mock_engine.subscriptions.handle_webhook.return_value = {
         "status": "handled",
         "event_type": "customer.subscription.deleted",

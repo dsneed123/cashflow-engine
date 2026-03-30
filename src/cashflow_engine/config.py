@@ -29,6 +29,9 @@ class SubscriptionConfig(BaseModel):
     stripe_price_id_pro: str | None = Field(
         default_factory=lambda: os.environ.get("STRIPE_PRICE_ID_PRO")
     )
+    stripe_webhook_secret: str | None = Field(
+        default_factory=lambda: os.environ.get("STRIPE_WEBHOOK_SECRET")
+    )
 
 
 class EngineConfig(BaseModel):

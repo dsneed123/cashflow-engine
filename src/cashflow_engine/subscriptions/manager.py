@@ -164,15 +164,7 @@ class SubscriptionManager:
             cancel_url=f"{frontend_url}/billing/cancel",
         )
 
-    def handle_webhook(self, payload: bytes, sig_header: str) -> dict:
-        webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
-        if not webhook_secret:
-            raise ValueError("STRIPE_WEBHOOK_SECRET not configured")
-        try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except Exception as exc:
-            raise ValueError(f"Webhook signature verification failed: {exc}") from exc
-
+    def handle_webhook(self, event: dict) -> dict:
         event_type = event["type"]
         event_data = event["data"]["object"]
 
