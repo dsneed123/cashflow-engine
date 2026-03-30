@@ -9,6 +9,9 @@ class TradingConfig(BaseModel):
     enabled: bool = False
     max_position_usd: float = Field(default=1000.0, gt=0)
     dry_run: bool = True
+    exchange_id: str = "binance"
+    api_key: str | None = Field(default_factory=lambda: os.environ.get("EXCHANGE_API_KEY"))
+    api_secret: str | None = Field(default_factory=lambda: os.environ.get("EXCHANGE_API_SECRET"))
 
 
 class ArbitrageConfig(BaseModel):
