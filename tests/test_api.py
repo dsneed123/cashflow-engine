@@ -23,6 +23,10 @@ def test_status():
 
 
 def test_run_cycle():
-    resp = client.post("/run-cycle")
+    client.post("/auth/register", json={"email": "api_test@example.com", "password": "testpass"})
+    token = client.post(
+        "/auth/login", json={"email": "api_test@example.com", "password": "testpass"}
+    ).json()["access_token"]
+    resp = client.post("/run-cycle", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
