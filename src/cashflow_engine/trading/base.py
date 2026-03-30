@@ -6,6 +6,7 @@ import ccxt
 import structlog
 
 from cashflow_engine.config import TradingConfig
+from cashflow_engine.core.trade_log import append_trade
 
 log = structlog.get_logger(__name__)
 
@@ -76,6 +77,16 @@ class TradingModule:
 
             order = self.client.place_order(symbol, signal, amount)
             log.info("trading_signal", symbol=symbol, price=price, ma_24h=ma_24h, signal=signal)
+            append_trade(
+                module="trading",
+                symbol=symbol,
+                side=signal,
+                amount=amount,
+                price=price,
+                exchange=self.config.exchange_id,
+                dry_run=self.config.dry_run,
+                order_id=order.get("id"),
+            )
 
             return {
                 "orders_placed": 1,
