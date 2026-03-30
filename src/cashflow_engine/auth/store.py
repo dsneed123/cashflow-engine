@@ -60,3 +60,12 @@ def update_user(user: User) -> User:
             _save(users)
             return user
     raise ValueError(f"User {user.id} not found")
+
+
+def set_tier(user_id: str, tier: str) -> None:
+    users = _load()
+    for i, u in enumerate(users):
+        if u["id"] == user_id:
+            users[i]["tier"] = tier
+            _save(users)
+            return

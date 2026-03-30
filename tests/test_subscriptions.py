@@ -1,11 +1,15 @@
 """Tests for the subscription manager and upgrade endpoint."""
 
+import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from cashflow_engine.api.app import app
+from cashflow_engine.auth import store as user_store
+from cashflow_engine.auth.models import User
 from cashflow_engine.config import SubscriptionConfig
 from cashflow_engine.subscriptions.manager import StripeClient, SubscriptionManager
 
@@ -557,3 +561,70 @@ def test_billing_webhook_subscription_deleted(mock_engine):
     )
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "customer.subscription.deleted"
+
+
+# --- Tier update tests ---
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_checkout_completed_upgrades_tier(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.return_value = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_tier123", "subscription": "sub_tier123"}},
+    }
+
+    user = User(
+        id="user-tier",
+        email="tier@example.com",
+        hashed_password="x",
+        tier="free",
+        created_at=datetime.now(timezone.utc),
+    )
+    user_store.create_user(user)
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": "user-tier",
+        "trial_days_remaining": 7,
+        "stripe_customer_id": "cus_tier123",
+        "stripe_subscription_id": None,
+    })
+
+    mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+    updated = user_store.get_user_by_id("user-tier")
+    assert updated.tier == "pro"
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_subscription_deleted_downgrades_tier(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.return_value = {
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_tier456", "customer": "cus_tier456"}},
+    }
+
+    user = User(
+        id="user-tier2",
+        email="tier2@example.com",
+        hashed_password="x",
+        tier="pro",
+        created_at=datetime.now(timezone.utc),
+    )
+    user_store.create_user(user)
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": "user-tier2",
+        "trial_days_remaining": 0,
+        "stripe_customer_id": "cus_tier456",
+        "stripe_subscription_id": "sub_tier456",
+    })
+
+    mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+    updated = user_store.get_user_by_id("user-tier2")
+    assert updated.tier == "free"
