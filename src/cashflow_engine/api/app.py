@@ -7,9 +7,10 @@ import threading
 import time
 from collections import deque
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from cashflow_engine.auth import models as auth_models
 from cashflow_engine.auth.router import get_current_user, require_tier, router as auth_router
@@ -110,3 +111,47 @@ def status(_: auth_models.User = Depends(get_current_user)) -> dict:
 @app.post("/run-cycle")
 def run_cycle(_: auth_models.User = Depends(require_tier("pro"))) -> dict:
     return _engine.run_cycle()
+
+
+# ---------------------------------------------------------------------------
+# Billing endpoints
+# ---------------------------------------------------------------------------
+
+
+class _CheckoutRequest(BaseModel):
+    price_id: str
+
+
+@app.post("/billing/checkout")
+def billing_checkout(
+    body: _CheckoutRequest,
+    current_user: auth_models.User = Depends(get_current_user),
+) -> dict:
+    mgr = _engine.subscriptions
+    if not mgr._stripe:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+    subscriber = next((s for s in mgr._subscribers if s["id"] == current_user.id), None)
+    if subscriber is None:
+        subscriber = mgr.add_subscriber(current_user.id, current_user.email, current_user.email)
+    if not subscriber.get("stripe_customer_id"):
+        raise HTTPException(status_code=503, detail="Stripe customer not available")
+    try:
+        url = mgr.create_checkout_session(current_user.id, body.price_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"checkout_url": url}
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(
+    request: Request,
+    stripe_signature: str | None = Header(default=None),
+) -> dict:
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Stripe-Signature header required")
+    payload = await request.body()
+    try:
+        result = _engine.subscriptions.handle_webhook(payload, stripe_signature)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result

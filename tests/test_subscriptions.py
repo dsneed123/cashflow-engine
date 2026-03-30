@@ -322,3 +322,238 @@ def test_upgrade_no_price_id_returns_503(mock_stripe_cls, monkeypatch):
     token = _register_and_login("noprice@test.com")
     resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 503
+
+
+# --- SubscriptionManager.create_checkout_session tests ---
+
+
+def test_create_checkout_session_no_stripe(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    mgr = SubscriptionManager(SubscriptionConfig(stripe_secret_key=None))
+    with pytest.raises(ValueError, match="Stripe not configured"):
+        mgr.create_checkout_session("user-1", "price_pro")
+
+
+@patch("cashflow_engine.subscriptions.manager.StripeClient")
+def test_create_checkout_session_subscriber_not_found(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    mock_stripe_cls.return_value = MagicMock()
+    mgr = SubscriptionManager(SubscriptionConfig(stripe_secret_key="sk_test"))
+    with pytest.raises(ValueError, match="not found"):
+        mgr.create_checkout_session("nonexistent", "price_pro")
+
+
+@patch("cashflow_engine.subscriptions.manager.StripeClient")
+def test_create_checkout_session_no_customer_id(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    mock_stripe_cls.return_value = MagicMock()
+    mgr = SubscriptionManager(SubscriptionConfig(stripe_secret_key="sk_test"))
+    mgr.add_subscriber("user-1")  # no email → stripe_customer_id stays None
+    with pytest.raises(ValueError, match="no Stripe customer"):
+        mgr.create_checkout_session("user-1", "price_pro")
+
+
+@patch("cashflow_engine.subscriptions.manager.StripeClient")
+def test_create_checkout_session_returns_url(mock_stripe_cls, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_customer.return_value = "cus_test123"
+    mock_stripe.create_checkout_session.return_value = "https://checkout.stripe.com/pay/cs_test"
+    mock_stripe_cls.return_value = mock_stripe
+
+    mgr = SubscriptionManager(SubscriptionConfig(stripe_secret_key="sk_test"))
+    subscriber = mgr.add_subscriber("user-1", email="user@example.com", name="Test")
+
+    url = mgr.create_checkout_session("user-1", "price_pro")
+
+    mock_stripe.create_checkout_session.assert_called_once_with(
+        "cus_test123",
+        "price_pro",
+        success_url="https://app.example.com/billing/success",
+        cancel_url="https://app.example.com/billing/cancel",
+    )
+    assert url == "https://checkout.stripe.com/pay/cs_test"
+
+
+# --- SubscriptionManager.handle_webhook tests ---
+
+
+def test_handle_webhook_no_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    mgr = SubscriptionManager(SubscriptionConfig())
+    with pytest.raises(ValueError, match="STRIPE_WEBHOOK_SECRET"):
+        mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_invalid_signature(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.side_effect = Exception("No signatures found")
+    mgr = SubscriptionManager(SubscriptionConfig())
+    with pytest.raises(ValueError, match="signature"):
+        mgr.handle_webhook(b"{}", "invalid_sig")
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_checkout_session_completed(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.return_value = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_test123", "subscription": "sub_new123"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": "user-1",
+        "trial_days_remaining": 7,
+        "stripe_customer_id": "cus_test123",
+        "stripe_subscription_id": None,
+    })
+
+    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+    assert result == {"status": "handled", "event_type": "checkout.session.completed"}
+    assert mgr._subscribers[0]["stripe_subscription_id"] == "sub_new123"
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_subscription_deleted(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.return_value = {
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_test123", "customer": "cus_test123"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": "user-1",
+        "trial_days_remaining": 0,
+        "stripe_customer_id": "cus_test123",
+        "stripe_subscription_id": "sub_test123",
+    })
+
+    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+    assert result == {"status": "handled", "event_type": "customer.subscription.deleted"}
+    assert mgr._subscribers[0]["stripe_subscription_id"] is None
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_handle_webhook_unknown_event_ignored(mock_stripe, tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    mock_stripe.Webhook.construct_event.return_value = {
+        "type": "payment_intent.created",
+        "data": {"object": {}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(b"{}", "t=1,v1=sig")
+
+    assert result["status"] == "handled"
+    assert result["event_type"] == "payment_intent.created"
+
+
+# --- POST /billing/checkout endpoint tests ---
+
+
+def test_billing_checkout_requires_auth():
+    resp = _client.post("/billing/checkout", json={"price_id": "price_pro"})
+    assert resp.status_code == 401
+
+
+@patch("cashflow_engine.api.app._engine")
+def test_billing_checkout_no_stripe_configured(mock_engine):
+    mock_engine.subscriptions._stripe = None
+    mock_engine.subscriptions._subscribers = []
+
+    token = _register_and_login("ckout_ns@test.com")
+    resp = _client.post(
+        "/billing/checkout",
+        json={"price_id": "price_pro"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 503
+
+
+@patch("cashflow_engine.api.app._engine")
+def test_billing_checkout_returns_checkout_url(mock_engine):
+    mock_stripe = MagicMock()
+    mock_engine.subscriptions._stripe = mock_stripe
+    mock_engine.subscriptions._subscribers = []
+    mock_engine.subscriptions.add_subscriber.return_value = {
+        "id": "user-id",
+        "stripe_customer_id": "cus_test",
+        "trial_days_remaining": 14,
+        "stripe_subscription_id": None,
+    }
+    mock_engine.subscriptions.create_checkout_session.return_value = "https://checkout.stripe.com/pay/x"
+
+    token = _register_and_login("ckout_ok@test.com")
+    resp = _client.post(
+        "/billing/checkout",
+        json={"price_id": "price_pro"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/pay/x"
+    mock_engine.subscriptions.create_checkout_session.assert_called_once()
+
+
+# --- POST /billing/webhook endpoint tests ---
+
+
+def test_billing_webhook_missing_signature():
+    resp = _client.post("/billing/webhook", content=b"{}")
+    assert resp.status_code == 400
+    assert "Stripe-Signature" in resp.json()["detail"]
+
+
+@patch("cashflow_engine.api.app._engine")
+def test_billing_webhook_invalid_signature(mock_engine):
+    mock_engine.subscriptions.handle_webhook.side_effect = ValueError("Webhook signature verification failed")
+    resp = _client.post(
+        "/billing/webhook",
+        content=b"{}",
+        headers={"Stripe-Signature": "invalid"},
+    )
+    assert resp.status_code == 400
+    assert "signature" in resp.json()["detail"].lower()
+
+
+@patch("cashflow_engine.api.app._engine")
+def test_billing_webhook_checkout_completed(mock_engine):
+    mock_engine.subscriptions.handle_webhook.return_value = {
+        "status": "handled",
+        "event_type": "checkout.session.completed",
+    }
+    payload = b'{"type": "checkout.session.completed"}'
+    resp = _client.post(
+        "/billing/webhook",
+        content=payload,
+        headers={"Stripe-Signature": "t=123,v1=abc"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["event_type"] == "checkout.session.completed"
+    mock_engine.subscriptions.handle_webhook.assert_called_once_with(payload, "t=123,v1=abc")
+
+
+@patch("cashflow_engine.api.app._engine")
+def test_billing_webhook_subscription_deleted(mock_engine):
+    mock_engine.subscriptions.handle_webhook.return_value = {
+        "status": "handled",
+        "event_type": "customer.subscription.deleted",
+    }
+    resp = _client.post(
+        "/billing/webhook",
+        content=b'{"type": "customer.subscription.deleted"}',
+        headers={"Stripe-Signature": "t=123,v1=abc"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["event_type"] == "customer.subscription.deleted"
