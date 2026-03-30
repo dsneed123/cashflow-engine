@@ -19,7 +19,7 @@ def health() -> dict:
 
 
 @app.get("/status")
-def status() -> dict:
+def status(_: auth_models.User = Depends(get_current_user)) -> dict:
     return _engine.status()
 
 

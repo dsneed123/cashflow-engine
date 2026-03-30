@@ -1,4 +1,4 @@
-"""User storage backed by a JSON file at state/users.json."""
+"""User storage backed by a JSON file at data/users.json."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Optional
 
 from cashflow_engine.auth.models import User
 
-_DEFAULT_PATH = "state/users.json"
+_DEFAULT_PATH = "data/users.json"
 
 
 def _get_path() -> Path:
