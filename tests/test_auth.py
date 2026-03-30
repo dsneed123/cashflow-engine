@@ -84,9 +84,16 @@ def test_run_cycle_requires_auth():
     assert resp.status_code == 401
 
 
-def test_run_cycle_with_auth():
-    _register("g@test.com")
+def test_run_cycle_free_user_forbidden():
+    _register("g@test.com", tier="free")
     token = _login_token("g@test.com")
+    resp = client.post("/run-cycle", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+
+
+def test_run_cycle_pro_user_allowed():
+    _register("g2@test.com", tier="pro")
+    token = _login_token("g2@test.com")
     resp = client.post("/run-cycle", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)

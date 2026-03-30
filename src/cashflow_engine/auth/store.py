@@ -50,3 +50,13 @@ def create_user(user: User) -> User:
     users.append(user.model_dump())
     _save(users)
     return user
+
+
+def update_user(user: User) -> User:
+    users = _load()
+    for i, u in enumerate(users):
+        if u["id"] == user.id:
+            users[i] = user.model_dump()
+            _save(users)
+            return user
+    raise ValueError(f"User {user.id} not found")
