@@ -9,6 +9,7 @@ from pathlib import Path
 import stripe
 import structlog
 
+from cashflow_engine.auth import store as auth_store
 from cashflow_engine.config import SubscriptionConfig
 
 log = structlog.get_logger(__name__)
@@ -178,8 +179,15 @@ class SubscriptionManager:
                         log.info("checkout_session_completed", subscriber_id=subscriber["id"])
                         break
                 self._save()
+            if customer_id:
+                user = auth_store.get_user_by_stripe_customer_id(customer_id)
+                if user:
+                    user.tier = "pro"
+                    auth_store.update_user(user)
+                    log.info("user_tier_upgraded", customer_id=customer_id)
         elif event_type == "customer.subscription.deleted":
             subscription_id = event_data.get("id")
+            customer_id = event_data.get("customer")
             if subscription_id:
                 for subscriber in self._subscribers:
                     if subscriber.get("stripe_subscription_id") == subscription_id:
@@ -187,5 +195,11 @@ class SubscriptionManager:
                         log.info("subscription_deleted", subscriber_id=subscriber["id"])
                         break
                 self._save()
+            if customer_id:
+                user = auth_store.get_user_by_stripe_customer_id(customer_id)
+                if user:
+                    user.tier = "free"
+                    auth_store.update_user(user)
+                    log.info("user_tier_downgraded", customer_id=customer_id)
 
         return {"status": "handled", "event_type": event_type}
