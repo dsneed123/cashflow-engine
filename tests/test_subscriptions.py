@@ -1,11 +1,15 @@
 """Tests for the subscription manager and upgrade endpoint."""
 
+import uuid
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from cashflow_engine.api.app import app
+from cashflow_engine.auth import store as auth_store
+from cashflow_engine.auth.models import User
 from cashflow_engine.config import SubscriptionConfig
 from cashflow_engine.subscriptions.manager import StripeClient, SubscriptionManager
 
@@ -550,3 +554,105 @@ def test_billing_webhook_subscription_deleted(mock_engine, mock_stripe):
     )
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "customer.subscription.deleted"
+
+
+# --- Tier update on webhook tests ---
+
+
+def _make_user(tmp_path, email: str, tier: str = "free", stripe_customer_id: str | None = None) -> User:
+    user = User(
+        id=str(uuid.uuid4()),
+        email=email,
+        hashed_password="hashed",
+        tier=tier,
+        created_at=datetime.now(timezone.utc),
+        stripe_customer_id=stripe_customer_id,
+    )
+    auth_store.create_user(user)
+    return user
+
+
+def test_handle_webhook_checkout_completed_upgrades_user_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "checkout@example.com", tier="free", stripe_customer_id="cus_checkout1")
+
+    event = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_checkout1", "subscription": "sub_new1"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": user.id,
+        "trial_days_remaining": 7,
+        "stripe_customer_id": "cus_checkout1",
+        "stripe_subscription_id": None,
+    })
+
+    result = mgr.handle_webhook(event)
+
+    assert result == {"status": "handled", "event_type": "checkout.session.completed"}
+    assert mgr._subscribers[0]["stripe_subscription_id"] == "sub_new1"
+    updated = auth_store.get_user_by_email("checkout@example.com")
+    assert updated.tier == "pro"
+
+
+def test_handle_webhook_subscription_deleted_downgrades_user_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "prouser@example.com", tier="pro", stripe_customer_id="cus_pro1")
+
+    event = {
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_pro1", "customer": "cus_pro1"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr._subscribers.append({
+        "id": user.id,
+        "trial_days_remaining": 0,
+        "stripe_customer_id": "cus_pro1",
+        "stripe_subscription_id": "sub_pro1",
+    })
+
+    result = mgr.handle_webhook(event)
+
+    assert result == {"status": "handled", "event_type": "customer.subscription.deleted"}
+    assert mgr._subscribers[0]["stripe_subscription_id"] is None
+    updated = auth_store.get_user_by_email("prouser@example.com")
+    assert updated.tier == "free"
+
+
+def test_handle_webhook_checkout_completed_no_matching_user_is_noop(tmp_path, monkeypatch):
+    """Webhook should not fail if no user with that stripe_customer_id exists."""
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    event = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"customer": "cus_unknown", "subscription": "sub_x"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result["status"] == "handled"
+
+
+def test_handle_webhook_subscription_deleted_no_matching_user_is_noop(tmp_path, monkeypatch):
+    """Webhook should not fail if no user with that stripe_customer_id exists."""
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    event = {
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"id": "sub_unknown", "customer": "cus_unknown"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result["status"] == "handled"

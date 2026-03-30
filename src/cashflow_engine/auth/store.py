@@ -45,6 +45,13 @@ def get_user_by_id(user_id: str) -> Optional[User]:
     return None
 
 
+def get_user_by_stripe_customer_id(customer_id: str) -> Optional[User]:
+    for u in _load():
+        if u.get("stripe_customer_id") == customer_id:
+            return User(**u)
+    return None
+
+
 def create_user(user: User) -> User:
     users = _load()
     users.append(user.model_dump())
