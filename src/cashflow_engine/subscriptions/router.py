@@ -40,5 +40,11 @@ def upgrade(current_user: auth_models.User = Depends(get_current_user)) -> dict:
             detail="Stripe price not configured",
         )
 
-    subscription_id = stripe_client.create_subscription(customer_id, price_id)
-    return {"subscription_id": subscription_id}
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    checkout_url = stripe_client.create_checkout_session(
+        customer_id,
+        price_id,
+        success_url=f"{frontend_url}/upgrade/success",
+        cancel_url=f"{frontend_url}/upgrade/cancel",
+    )
+    return {"checkout_url": checkout_url}

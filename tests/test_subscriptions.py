@@ -228,6 +228,27 @@ def test_stripe_client_get_subscription(mock_stripe):
     assert result["status"] == "active"
 
 
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_stripe_client_create_checkout_session(mock_stripe):
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_test_abc"
+    mock_stripe.checkout.Session.create.return_value = mock_session
+
+    client = StripeClient("sk_test")
+    url = client.create_checkout_session(
+        "cus_abc", "price_pro", "https://example.com/success", "https://example.com/cancel"
+    )
+
+    mock_stripe.checkout.Session.create.assert_called_once_with(
+        customer="cus_abc",
+        mode="subscription",
+        line_items=[{"price": "price_pro", "quantity": 1}],
+        success_url="https://example.com/success",
+        cancel_url="https://example.com/cancel",
+    )
+    assert url == "https://checkout.stripe.com/pay/cs_test_abc"
+
+
 # --- /subscriptions/upgrade endpoint tests ---
 
 
@@ -244,21 +265,27 @@ def test_upgrade_no_stripe_configured(monkeypatch):
 
 
 @patch("cashflow_engine.subscriptions.router.StripeClient")
-def test_upgrade_creates_customer_and_subscription(mock_stripe_cls, monkeypatch):
+def test_upgrade_creates_customer_and_checkout_session(mock_stripe_cls, monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
     monkeypatch.setenv("STRIPE_PRICE_ID_PRO", "price_pro")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     mock_stripe = MagicMock()
     mock_stripe.create_customer.return_value = "cus_new"
-    mock_stripe.create_subscription.return_value = "sub_new"
+    mock_stripe.create_checkout_session.return_value = "https://checkout.stripe.com/session123"
     mock_stripe_cls.return_value = mock_stripe
 
     token = _register_and_login("upgrade@test.com")
     resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.json() == {"subscription_id": "sub_new"}
+    assert resp.json() == {"checkout_url": "https://checkout.stripe.com/session123"}
     mock_stripe.create_customer.assert_called_once_with("upgrade@test.com", "upgrade@test.com")
-    mock_stripe.create_subscription.assert_called_once_with("cus_new", "price_pro")
+    mock_stripe.create_checkout_session.assert_called_once_with(
+        "cus_new",
+        "price_pro",
+        success_url="https://app.example.com/upgrade/success",
+        cancel_url="https://app.example.com/upgrade/cancel",
+    )
 
 
 @patch("cashflow_engine.subscriptions.router.StripeClient")
@@ -267,7 +294,7 @@ def test_upgrade_reuses_existing_customer_id(mock_stripe_cls, monkeypatch):
     monkeypatch.setenv("STRIPE_PRICE_ID_PRO", "price_pro")
 
     mock_stripe = MagicMock()
-    mock_stripe.create_subscription.return_value = "sub_existing"
+    mock_stripe.create_checkout_session.return_value = "https://checkout.stripe.com/reuse"
     mock_stripe_cls.return_value = mock_stripe
 
     # Pre-register with a known stripe_customer_id by calling upgrade twice
