@@ -27,7 +27,7 @@ def test_status():
 
 
 def test_run_cycle():
-    client.post("/auth/register", json={"email": "api_test@example.com", "password": "testpass"})
+    client.post("/auth/register", json={"email": "api_test@example.com", "password": "testpass", "tier": "pro"})
     token = client.post(
         "/auth/login", json={"email": "api_test@example.com", "password": "testpass"}
     ).json()["access_token"]

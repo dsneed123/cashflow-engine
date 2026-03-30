@@ -13,6 +13,7 @@ from cashflow_engine.auth import models, security, store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+_TIER_RANK = {"free": 0, "pro": 1}
 
 
 def get_current_user(token: str = Depends(_oauth2_scheme)) -> models.User:
@@ -29,6 +30,18 @@ def get_current_user(token: str = Depends(_oauth2_scheme)) -> models.User:
     if user is None:
         raise credentials_exc
     return user
+
+
+def require_tier(tier: str):
+    """Return a dependency that enforces a minimum subscription tier."""
+    def _check(current_user: models.User = Depends(get_current_user)) -> models.User:
+        if _TIER_RANK.get(current_user.tier, 0) < _TIER_RANK.get(tier, 0):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient subscription tier",
+            )
+        return current_user
+    return _check
 
 
 @router.post("/register", response_model=models.UserResponse, status_code=status.HTTP_201_CREATED)

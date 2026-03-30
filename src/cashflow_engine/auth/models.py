@@ -13,6 +13,7 @@ class User(BaseModel):
     hashed_password: str
     tier: str = "free"
     created_at: datetime
+    stripe_customer_id: str | None = None
 
 
 class RegisterRequest(BaseModel):

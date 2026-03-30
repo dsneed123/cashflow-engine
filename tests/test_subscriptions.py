@@ -1,9 +1,20 @@
-"""Tests for the subscription manager."""
+"""Tests for the subscription manager and upgrade endpoint."""
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+from fastapi.testclient import TestClient
+
+from cashflow_engine.api.app import app
 from cashflow_engine.config import SubscriptionConfig
 from cashflow_engine.subscriptions.manager import StripeClient, SubscriptionManager
+
+_client = TestClient(app)
+
+
+def _register_and_login(email: str, tier: str = "free") -> str:
+    _client.post("/auth/register", json={"email": email, "password": "testpass", "tier": tier})
+    return _client.post("/auth/login", json={"email": email, "password": "testpass"}).json()["access_token"]
 
 
 def test_add_subscriber():
@@ -202,3 +213,72 @@ def test_stripe_client_get_subscription(mock_stripe):
     result = client.get_subscription("sub_abc")
     mock_stripe.Subscription.retrieve.assert_called_once_with("sub_abc")
     assert result["status"] == "active"
+
+
+# --- /subscriptions/upgrade endpoint tests ---
+
+
+def test_upgrade_requires_auth():
+    resp = _client.get("/subscriptions/upgrade")
+    assert resp.status_code == 401
+
+
+def test_upgrade_no_stripe_configured(monkeypatch):
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    token = _register_and_login("nostripe@test.com")
+    resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 503
+
+
+@patch("cashflow_engine.subscriptions.router.StripeClient")
+def test_upgrade_creates_customer_and_subscription(mock_stripe_cls, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    monkeypatch.setenv("STRIPE_PRICE_ID_PRO", "price_pro")
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_customer.return_value = "cus_new"
+    mock_stripe.create_subscription.return_value = "sub_new"
+    mock_stripe_cls.return_value = mock_stripe
+
+    token = _register_and_login("upgrade@test.com")
+    resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json() == {"subscription_id": "sub_new"}
+    mock_stripe.create_customer.assert_called_once_with("upgrade@test.com", "upgrade@test.com")
+    mock_stripe.create_subscription.assert_called_once_with("cus_new", "price_pro")
+
+
+@patch("cashflow_engine.subscriptions.router.StripeClient")
+def test_upgrade_reuses_existing_customer_id(mock_stripe_cls, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    monkeypatch.setenv("STRIPE_PRICE_ID_PRO", "price_pro")
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_subscription.return_value = "sub_existing"
+    mock_stripe_cls.return_value = mock_stripe
+
+    # Pre-register with a known stripe_customer_id by calling upgrade twice
+    token = _register_and_login("reuse@test.com")
+    mock_stripe.create_customer.return_value = "cus_existing"
+
+    # First call creates the customer
+    _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+    # Second call should reuse the stored customer_id
+    resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    # create_customer should only have been called once total
+    assert mock_stripe.create_customer.call_count == 1
+
+
+@patch("cashflow_engine.subscriptions.router.StripeClient")
+def test_upgrade_no_price_id_returns_503(mock_stripe_cls, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    monkeypatch.delenv("STRIPE_PRICE_ID_PRO", raising=False)
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_customer.return_value = "cus_noprice"
+    mock_stripe_cls.return_value = mock_stripe
+
+    token = _register_and_login("noprice@test.com")
+    resp = _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 503
