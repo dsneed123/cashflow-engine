@@ -5,31 +5,50 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 
 from cashflow_engine.auth import models, security, store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 _TIER_RANK = {"free": 0, "pro": 1}
 
 
-def get_current_user(token: str = Depends(_oauth2_scheme)) -> models.User:
+def get_current_user_from_api_key(x_api_key: str | None = Header(default=None)) -> models.User | None:
+    """Return user identified by X-API-Key header, or None if header absent."""
+    if x_api_key is None:
+        return None
+    return store.get_user_by_api_key(x_api_key)
+
+
+def get_current_user(
+    token: str | None = Depends(_oauth2_scheme),
+    x_api_key: str | None = Header(default=None),
+) -> models.User:
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    try:
-        user_id = security.decode_token(token)
-    except JWTError:
-        raise credentials_exc
-    user = store.get_user_by_id(user_id)
-    if user is None:
-        raise credentials_exc
-    return user
+    # Try JWT first
+    if token:
+        try:
+            user_id = security.decode_token(token)
+        except JWTError:
+            raise credentials_exc
+        user = store.get_user_by_id(user_id)
+        if user is None:
+            raise credentials_exc
+        return user
+    # Fall back to API key
+    if x_api_key:
+        user = store.get_user_by_api_key(x_api_key)
+        if user is None:
+            raise credentials_exc
+        return user
+    raise credentials_exc
 
 
 def require_tier(tier: str):
@@ -75,3 +94,27 @@ def me(current_user: models.User = Depends(get_current_user)) -> models.UserResp
         tier=current_user.tier,
         created_at=current_user.created_at,
     )
+
+
+@router.post("/api-key")
+def create_api_key(current_user: models.User = Depends(require_tier("pro"))) -> dict:
+    """Generate and store an API key for the authenticated pro user."""
+    current_user.api_key = store.generate_api_key()
+    store.update_user(current_user)
+    return {"api_key": current_user.api_key}
+
+
+@router.get("/api-key")
+def get_api_key(current_user: models.User = Depends(get_current_user)) -> dict:
+    """Retrieve the current API key for the authenticated user."""
+    if current_user.api_key is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key set")
+    return {"api_key": current_user.api_key}
+
+
+@router.delete("/api-key")
+def revoke_api_key(current_user: models.User = Depends(get_current_user)) -> dict:
+    """Revoke the current API key for the authenticated user."""
+    current_user.api_key = None
+    store.update_user(current_user)
+    return {"message": "API key revoked"}
