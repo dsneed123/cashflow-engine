@@ -14,6 +14,7 @@ class User(BaseModel):
     tier: str = "free"
     created_at: datetime
     stripe_customer_id: str | None = None
+    api_key: str | None = None
 
 
 class RegisterRequest(BaseModel):
