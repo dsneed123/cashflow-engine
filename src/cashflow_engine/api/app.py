@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 
 import stripe
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
@@ -14,15 +15,26 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from cashflow_engine.auth import models as auth_models
+from cashflow_engine.auth import security as _security
 from cashflow_engine.auth.router import get_current_user, require_tier, router as auth_router
+from cashflow_engine.config import validate_subscription_config
 from cashflow_engine.core.engine import CashflowEngine
 from cashflow_engine.core.trade_log import calculate_pnl, read_trades
 from cashflow_engine.subscriptions.router import router as subscriptions_router
 
-app = FastAPI(title="Cashflow Engine", version="0.1.0")
+_engine = CashflowEngine()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _security.validate_jwt_secret(_security._SECRET_KEY)
+    validate_subscription_config(_engine.subscriptions.config)
+    yield
+
+
+app = FastAPI(title="Cashflow Engine", version="0.1.0", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(subscriptions_router)
-_engine = CashflowEngine()
 
 # ---------------------------------------------------------------------------
 # Rate limiting
