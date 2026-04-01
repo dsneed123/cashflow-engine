@@ -1,8 +1,14 @@
 """Tests for JWT auth endpoints."""
 
+import concurrent.futures
+import uuid
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from cashflow_engine.api.app import app
+from cashflow_engine.auth import store
+from cashflow_engine.auth.models import User
 
 client = TestClient(app)
 
@@ -110,3 +116,44 @@ def test_status_with_auth():
     resp = client.get("/status", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-write stress tests
+# ---------------------------------------------------------------------------
+
+
+def _make_user(suffix: str) -> User:
+    return User(
+        id=str(uuid.uuid4()),
+        email=f"conc_{suffix}@test.com",
+        hashed_password="x",
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def test_create_user_concurrent_no_lost_writes():
+    """Concurrent create_user calls must not lose any user records."""
+    n = 20
+    users = [_make_user(str(i)) for i in range(n)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(store.create_user, u) for u in users]
+        for f in concurrent.futures.as_completed(futures):
+            f.result()
+    saved = store._load()
+    assert len(saved) == n
+
+
+def test_update_user_concurrent_no_corruption():
+    """Concurrent update_user calls must not corrupt the store."""
+    users = [_make_user(f"upd{i}") for i in range(10)]
+    for u in users:
+        store.create_user(u)
+    updated = [u.model_copy(update={"hashed_password": "updated"}) for u in users]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(store.update_user, u) for u in updated]
+        for f in concurrent.futures.as_completed(futures):
+            f.result()
+    saved = store._load()
+    assert len(saved) == 10
+    assert all(u["hashed_password"] == "updated" for u in saved)

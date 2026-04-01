@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "ccxt>=4.0",
     "fastapi>=0.111",
+    "filelock>=3.0",
     "httpx>=0.27",
     "passlib[bcrypt]>=1.7",
     "pydantic>=2.0",
