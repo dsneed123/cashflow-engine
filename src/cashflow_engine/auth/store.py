@@ -8,6 +8,8 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
+from filelock import FileLock
+
 from cashflow_engine.auth.models import User
 
 _DEFAULT_PATH = "data/users.json"
@@ -64,18 +66,24 @@ def get_user_by_api_key(api_key: str) -> Optional[User]:
     return None
 
 
+def _get_lock_path() -> Path:
+    return _get_path().with_suffix(".lock")
+
+
 def create_user(user: User) -> User:
-    users = _load()
-    users.append(user.model_dump())
-    _save(users)
+    with FileLock(str(_get_lock_path())):
+        users = _load()
+        users.append(user.model_dump())
+        _save(users)
     return user
 
 
 def update_user(user: User) -> User:
-    users = _load()
-    for i, u in enumerate(users):
-        if u["id"] == user.id:
-            users[i] = user.model_dump()
-            _save(users)
-            return user
+    with FileLock(str(_get_lock_path())):
+        users = _load()
+        for i, u in enumerate(users):
+            if u["id"] == user.id:
+                users[i] = user.model_dump()
+                _save(users)
+                return user
     raise ValueError(f"User {user.id} not found")

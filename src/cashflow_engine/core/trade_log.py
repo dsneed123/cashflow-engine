@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from filelock import FileLock
 
 log = structlog.get_logger(__name__)
 
@@ -58,9 +59,10 @@ def append_trade(
         "order_id": order_id,
     }
     path = _get_path()
-    records = _load(path)
-    records.append(record)
-    _save(path, records)
+    with FileLock(str(path.with_suffix(".lock"))):
+        records = _load(path)
+        records.append(record)
+        _save(path, records)
     log.info("trade_logged", module=module, symbol=symbol, side=side, order_id=order_id)
     return record
 

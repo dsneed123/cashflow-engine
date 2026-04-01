@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 
 import pytest
@@ -213,3 +214,25 @@ def test_get_trades_pagination_params():
     assert len(data["trades"]) == 2
     # newest first: 4,3,2,1,0 → offset 1 gives 3,2
     assert data["trades"][0]["price"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-write stress tests
+# ---------------------------------------------------------------------------
+
+
+def test_append_trade_concurrent_no_lost_writes(tmp_path, monkeypatch):
+    """Concurrent appends must not lose any records."""
+    path = tmp_path / "trades.json"
+    monkeypatch.setenv("TRADES_DB_PATH", str(path))
+    n = 20
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(trade_log.append_trade, **_sample_trade(price=float(i)))
+            for i in range(n)
+        ]
+        for f in concurrent.futures.as_completed(futures):
+            f.result()
+    with path.open() as f:
+        records = json.load(f)
+    assert len(records) == n
