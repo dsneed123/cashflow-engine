@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from cashflow_engine.auth import models as auth_models
 from cashflow_engine.auth.router import get_current_user, require_tier, router as auth_router
 from cashflow_engine.core.engine import CashflowEngine
-from cashflow_engine.core.trade_log import read_trades
+from cashflow_engine.core.trade_log import calculate_pnl, read_trades
 from cashflow_engine.subscriptions.router import router as subscriptions_router
 
 app = FastAPI(title="Cashflow Engine", version="0.1.0")
@@ -123,6 +123,19 @@ def get_trades(
 ) -> dict:
     trades = read_trades(limit=limit, offset=offset)
     return {"trades": trades, "limit": limit, "offset": offset}
+
+
+@app.get("/pnl")
+def get_pnl(_: auth_models.User = Depends(get_current_user)) -> dict:
+    return calculate_pnl()
+
+
+@app.get("/pnl/{symbol:path}")
+def get_pnl_symbol(
+    symbol: str,
+    _: auth_models.User = Depends(get_current_user),
+) -> dict:
+    return calculate_pnl(symbol=symbol)
 
 
 # ---------------------------------------------------------------------------
