@@ -217,6 +217,155 @@ def test_get_trades_pagination_params():
 
 
 # ---------------------------------------------------------------------------
+# calculate_pnl
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_pnl_empty_log():
+    result = trade_log.calculate_pnl()
+    assert result["realized_pnl"] == 0.0
+    assert result["unrealized_value"] == 0.0
+    assert result["trade_count"] == 0
+    assert result["dry_run_count"] == 0
+    assert result["wins"] == 0
+    assert result["losses"] == 0
+    assert result["win_loss_ratio"] is None
+    assert result["symbols"] == {}
+
+
+def test_calculate_pnl_all_buys_unrealized():
+    trade_log.append_trade(**_sample_trade(side="buy", price=50000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="buy", price=48000.0, amount=0.2, dry_run=False))
+    result = trade_log.calculate_pnl()
+    assert result["realized_pnl"] == 0.0
+    # unrealized_value = cost basis: 0.1*50000 + 0.2*48000 = 14600
+    assert result["unrealized_value"] == pytest.approx(14600.0)
+    assert result["trade_count"] == 2
+    assert result["wins"] == 0
+    assert result["losses"] == 0
+    assert result["win_loss_ratio"] is None
+
+
+def test_calculate_pnl_matched_pair_profit():
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl()
+    # realized P&L = (50000 - 45000) * 0.1 = 500
+    assert result["realized_pnl"] == pytest.approx(500.0)
+    assert result["unrealized_value"] == pytest.approx(0.0)
+    assert result["trade_count"] == 2
+    assert result["wins"] == 1
+    assert result["losses"] == 0
+    assert result["win_loss_ratio"] is None  # no losses to divide by
+
+
+def test_calculate_pnl_matched_pair_loss():
+    trade_log.append_trade(**_sample_trade(side="buy", price=50000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=45000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl()
+    # realized P&L = (45000 - 50000) * 0.1 = -500
+    assert result["realized_pnl"] == pytest.approx(-500.0)
+    assert result["wins"] == 0
+    assert result["losses"] == 1
+    assert result["win_loss_ratio"] == pytest.approx(0.0)  # 0 wins / 1 loss
+
+
+def test_calculate_pnl_multiple_symbols():
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="ETH/USDT", side="buy", price=3000.0, amount=1.0, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="sell", price=50000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl()
+    assert result["realized_pnl"] == pytest.approx(500.0)
+    # ETH/USDT still open: cost basis 3000
+    assert result["unrealized_value"] == pytest.approx(3000.0)
+    assert "BTC/USDT" in result["symbols"]
+    assert "ETH/USDT" in result["symbols"]
+    assert result["symbols"]["BTC/USDT"]["realized_pnl"] == pytest.approx(500.0)
+    assert result["symbols"]["ETH/USDT"]["unrealized_value"] == pytest.approx(3000.0)
+
+
+def test_calculate_pnl_dry_run_excluded():
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=True))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=True))
+    result = trade_log.calculate_pnl()
+    assert result["realized_pnl"] == 0.0
+    assert result["unrealized_value"] == 0.0
+    assert result["trade_count"] == 0
+    assert result["dry_run_count"] == 2
+
+
+def test_calculate_pnl_symbol_filter():
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="ETH/USDT", side="buy", price=3000.0, amount=1.0, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="sell", price=50000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl(symbol="BTC/USDT")
+    assert result["realized_pnl"] == pytest.approx(500.0)
+    assert result["trade_count"] == 2
+    assert "symbols" not in result  # no breakdown when filtering by symbol
+
+
+def test_calculate_pnl_fifo_partial_lots():
+    # Buy 0.3 BTC, sell 0.1 twice — FIFO should consume from first lot
+    trade_log.append_trade(**_sample_trade(side="buy", price=40000.0, amount=0.3, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl()
+    # Each sell: (50000 - 40000) * 0.1 = 1000; total = 2000
+    assert result["realized_pnl"] == pytest.approx(2000.0)
+    # Remaining: 0.1 BTC at 40000 = 4000
+    assert result["unrealized_value"] == pytest.approx(4000.0)
+
+
+# ---------------------------------------------------------------------------
+# GET /pnl and GET /pnl/{symbol} endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_get_pnl_requires_auth():
+    resp = client.get("/pnl")
+    assert resp.status_code == 401
+
+
+def test_get_pnl_empty():
+    token = _auth_token("pnl_user@example.com")
+    resp = client.get("/pnl", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["realized_pnl"] == 0.0
+    assert data["trade_count"] == 0
+    assert data["symbols"] == {}
+
+
+def test_get_pnl_with_trades():
+    token = _auth_token("pnl2@example.com")
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False))
+    resp = client.get("/pnl", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["realized_pnl"] == pytest.approx(500.0)
+    assert data["wins"] == 1
+
+
+def test_get_pnl_symbol_requires_auth():
+    resp = client.get("/pnl/BTC/USDT")
+    assert resp.status_code == 401
+
+
+def test_get_pnl_symbol():
+    token = _auth_token("pnl3@example.com")
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="ETH/USDT", side="buy", price=3000.0, amount=1.0, dry_run=False))
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="sell", price=50000.0, amount=0.1, dry_run=False))
+    resp = client.get("/pnl/BTC/USDT", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["realized_pnl"] == pytest.approx(500.0)
+    assert data["trade_count"] == 2
+    assert "symbols" not in data
+
+
+# ---------------------------------------------------------------------------
 # Concurrent-write stress tests
 # ---------------------------------------------------------------------------
 
