@@ -5,6 +5,14 @@ import os
 from pydantic import BaseModel, Field
 
 
+def validate_subscription_config(config: "SubscriptionConfig") -> None:
+    """Raise ValueError if subscriptions are enabled without a Stripe secret key."""
+    if config.enabled and not config.stripe_secret_key:
+        raise ValueError(
+            "STRIPE_SECRET_KEY must be set when subscriptions are enabled."
+        )
+
+
 class TradingConfig(BaseModel):
     enabled: bool = False
     max_position_usd: float = Field(default=1000.0, gt=0)

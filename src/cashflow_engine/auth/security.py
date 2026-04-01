@@ -8,9 +8,23 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from jose import JWTError, jwt
 
-_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-secret-change-in-production")
+_DEV_SECRET = "dev-secret-change-in-production"
+_MIN_SECRET_LEN = 32
+_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", _DEV_SECRET)
 _ALGORITHM = "HS256"
 _ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+
+
+def validate_jwt_secret(secret: str) -> None:
+    """Raise ValueError if *secret* is insecure (default or too short)."""
+    if secret == _DEV_SECRET:
+        raise ValueError(
+            "JWT_SECRET_KEY must not be the default dev value; set a secure random string."
+        )
+    if len(secret) < _MIN_SECRET_LEN:
+        raise ValueError(
+            f"JWT_SECRET_KEY must be at least {_MIN_SECRET_LEN} characters long."
+        )
 
 
 def hash_password(password: str) -> str:
