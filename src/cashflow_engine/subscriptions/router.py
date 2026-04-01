@@ -23,6 +23,22 @@ def _get_stripe_client() -> StripeClient:
     return StripeClient(key)
 
 
+@router.post("/portal")
+def portal(current_user: auth_models.User = Depends(get_current_user)) -> dict:
+    if current_user.stripe_customer_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No Stripe customer associated with this account",
+        )
+    stripe_client = _get_stripe_client()
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    portal_url = stripe_client.create_portal_session(
+        current_user.stripe_customer_id,
+        return_url=f"{frontend_url}/dashboard",
+    )
+    return {"url": portal_url}
+
+
 @router.get("/upgrade")
 def upgrade(current_user: auth_models.User = Depends(get_current_user)) -> dict:
     stripe_client = _get_stripe_client()

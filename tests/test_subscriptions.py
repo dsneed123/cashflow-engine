@@ -656,3 +656,153 @@ def test_handle_webhook_subscription_deleted_no_matching_user_is_noop(tmp_path, 
     result = mgr.handle_webhook(event)
 
     assert result["status"] == "handled"
+
+
+# --- POST /subscriptions/portal endpoint tests ---
+
+
+def test_portal_requires_auth():
+    resp = _client.post("/subscriptions/portal")
+    assert resp.status_code == 401
+
+
+def test_portal_no_stripe_customer_returns_400(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    token = _register_and_login("noportal@test.com")
+    resp = _client.post("/subscriptions/portal", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 400
+    assert "Stripe customer" in resp.json()["detail"]
+
+
+@patch("cashflow_engine.subscriptions.router.StripeClient")
+def test_portal_returns_url(mock_stripe_cls, monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test")
+    monkeypatch.setenv("STRIPE_PRICE_ID_PRO", "price_pro")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+
+    mock_stripe = MagicMock()
+    mock_stripe.create_customer.return_value = "cus_portal1"
+    mock_stripe.create_checkout_session.return_value = "https://checkout.stripe.com/session"
+    mock_stripe.create_portal_session.return_value = "https://billing.stripe.com/portal/session"
+    mock_stripe_cls.return_value = mock_stripe
+
+    # First upgrade to get a stripe_customer_id stored
+    token = _register_and_login("portal_user@test.com")
+    _client.get("/subscriptions/upgrade", headers={"Authorization": f"Bearer {token}"})
+
+    resp = _client.post("/subscriptions/portal", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json() == {"url": "https://billing.stripe.com/portal/session"}
+    mock_stripe.create_portal_session.assert_called_once_with(
+        "cus_portal1",
+        return_url="https://app.example.com/dashboard",
+    )
+
+
+@patch("cashflow_engine.subscriptions.manager.stripe")
+def test_stripe_client_create_portal_session(mock_stripe):
+    mock_session = MagicMock()
+    mock_session.url = "https://billing.stripe.com/portal/session123"
+    mock_stripe.billing_portal.Session.create.return_value = mock_session
+
+    client = StripeClient("sk_test")
+    url = client.create_portal_session("cus_abc", "https://app.example.com/dashboard")
+
+    mock_stripe.billing_portal.Session.create.assert_called_once_with(
+        customer="cus_abc",
+        return_url="https://app.example.com/dashboard",
+    )
+    assert url == "https://billing.stripe.com/portal/session123"
+
+
+# --- customer.subscription.updated webhook tests ---
+
+
+def test_handle_webhook_subscription_updated_active_upgrades_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "sub_updated@example.com", tier="free", stripe_customer_id="cus_upd1")
+
+    event = {
+        "type": "customer.subscription.updated",
+        "data": {"object": {"customer": "cus_upd1", "status": "active"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result == {"status": "handled", "event_type": "customer.subscription.updated"}
+    updated = auth_store.get_user_by_email("sub_updated@example.com")
+    assert updated.tier == "pro"
+
+
+def test_handle_webhook_subscription_updated_past_due_downgrades_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "pastdue@example.com", tier="pro", stripe_customer_id="cus_pastdue")
+
+    event = {
+        "type": "customer.subscription.updated",
+        "data": {"object": {"customer": "cus_pastdue", "status": "past_due"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result == {"status": "handled", "event_type": "customer.subscription.updated"}
+    updated = auth_store.get_user_by_email("pastdue@example.com")
+    assert updated.tier == "free"
+
+
+def test_handle_webhook_subscription_updated_unpaid_downgrades_tier(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "unpaid@example.com", tier="pro", stripe_customer_id="cus_unpaid")
+
+    event = {
+        "type": "customer.subscription.updated",
+        "data": {"object": {"customer": "cus_unpaid", "status": "unpaid"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result == {"status": "handled", "event_type": "customer.subscription.updated"}
+    updated = auth_store.get_user_by_email("unpaid@example.com")
+    assert updated.tier == "free"
+
+
+def test_handle_webhook_subscription_updated_other_status_no_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    user = _make_user(tmp_path, "trialing@example.com", tier="pro", stripe_customer_id="cus_trial2")
+
+    event = {
+        "type": "customer.subscription.updated",
+        "data": {"object": {"customer": "cus_trial2", "status": "trialing"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    mgr.handle_webhook(event)
+
+    updated = auth_store.get_user_by_email("trialing@example.com")
+    assert updated.tier == "pro"
+
+
+def test_handle_webhook_subscription_updated_no_matching_user_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTIONS_DB_PATH", str(tmp_path / "subs.json"))
+    monkeypatch.setenv("USERS_DB_PATH", str(tmp_path / "users.json"))
+
+    event = {
+        "type": "customer.subscription.updated",
+        "data": {"object": {"customer": "cus_nobody", "status": "active"}},
+    }
+
+    mgr = SubscriptionManager(SubscriptionConfig())
+    result = mgr.handle_webhook(event)
+
+    assert result["status"] == "handled"

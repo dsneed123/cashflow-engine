@@ -52,6 +52,13 @@ class StripeClient:
         )
         return session.url
 
+    def create_portal_session(self, customer_id: str, return_url: str) -> str:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return session.url
+
 
 class SubscriptionManager:
     def __init__(self, config: SubscriptionConfig) -> None:
@@ -185,6 +192,20 @@ class SubscriptionManager:
                     user.tier = "pro"
                     auth_store.update_user(user)
                     log.info("user_tier_upgraded", customer_id=customer_id)
+        elif event_type == "customer.subscription.updated":
+            customer_id = event_data.get("customer")
+            new_status = event_data.get("status")
+            if customer_id and new_status:
+                user = auth_store.get_user_by_stripe_customer_id(customer_id)
+                if user:
+                    if new_status == "active":
+                        user.tier = "pro"
+                        auth_store.update_user(user)
+                        log.info("user_tier_upgraded", customer_id=customer_id, status=new_status)
+                    elif new_status in ("past_due", "unpaid"):
+                        user.tier = "free"
+                        auth_store.update_user(user)
+                        log.info("user_tier_downgraded", customer_id=customer_id, status=new_status)
         elif event_type == "customer.subscription.deleted":
             subscription_id = event_data.get("id")
             customer_id = event_data.get("customer")
