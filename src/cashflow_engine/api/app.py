@@ -9,6 +9,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 
 import stripe
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,13 +24,27 @@ from cashflow_engine.core.trade_log import calculate_pnl, read_trades
 from cashflow_engine.subscriptions.router import router as subscriptions_router
 
 _engine = CashflowEngine()
+_scheduler: AsyncIOScheduler | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _scheduler
     _security.validate_jwt_secret(_security._SECRET_KEY)
     validate_subscription_config(_engine.subscriptions.config)
-    yield
+
+    if os.environ.get("TRADING_ENABLED", "").lower() == "true":
+        interval = int(os.environ.get("CYCLE_INTERVAL_SECONDS", "300"))
+        _scheduler = AsyncIOScheduler()
+        _scheduler.add_job(_engine.run_cycle, "interval", seconds=interval)
+        _scheduler.start()
+
+    try:
+        yield
+    finally:
+        if _scheduler is not None and _scheduler.running:
+            _scheduler.shutdown(wait=False)
+        _scheduler = None
 
 
 app = FastAPI(title="Cashflow Engine", version="0.1.0", lifespan=lifespan)
@@ -125,6 +140,15 @@ def status(_: auth_models.User = Depends(get_current_user)) -> dict:
 @app.post("/run-cycle")
 def run_cycle(_: auth_models.User = Depends(require_tier("pro"))) -> dict:
     return _engine.run_cycle()
+
+
+@app.get("/scheduler/status")
+def scheduler_status() -> dict:
+    if _scheduler is None or not _scheduler.running:
+        return {"running": False, "next_run": None}
+    jobs = _scheduler.get_jobs()
+    next_run = jobs[0].next_run_time.isoformat() if jobs and jobs[0].next_run_time else None
+    return {"running": True, "next_run": next_run}
 
 
 @app.get("/trades")

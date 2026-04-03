@@ -366,6 +366,65 @@ def test_get_pnl_symbol():
 
 
 # ---------------------------------------------------------------------------
+# Fee tracking tests
+# ---------------------------------------------------------------------------
+
+
+def test_append_trade_fee_field():
+    trade_log.append_trade(**_sample_trade(fee=5.0, dry_run=False))
+    records = trade_log.read_trades(limit=1)
+    assert records[0]["fee"] == 5.0
+
+
+def test_append_trade_fee_defaults_to_none():
+    trade_log.append_trade(**_sample_trade(dry_run=False))
+    records = trade_log.read_trades(limit=1)
+    assert records[0]["fee"] is None
+
+
+def test_calculate_pnl_fees_deducted_from_realized():
+    # Buy then sell for +500 gross, with a $10 fee on the sell
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=False, fee=0.0))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False, fee=10.0))
+    result = trade_log.calculate_pnl()
+    # realized_pnl = (50000 - 45000) * 0.1 - 10 = 490
+    assert result["realized_pnl"] == pytest.approx(490.0)
+    assert result["total_fees_paid"] == pytest.approx(10.0)
+
+
+def test_calculate_pnl_total_fees_paid_field_present():
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=False, fee=2.5))
+    result = trade_log.calculate_pnl()
+    assert "total_fees_paid" in result
+    assert result["total_fees_paid"] == pytest.approx(2.5)
+
+
+def test_calculate_pnl_fees_zero_when_none():
+    # Records without fee field should contribute 0 to total_fees_paid
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=False))
+    trade_log.append_trade(**_sample_trade(side="sell", price=50000.0, amount=0.1, dry_run=False))
+    result = trade_log.calculate_pnl()
+    assert result["total_fees_paid"] == pytest.approx(0.0)
+    assert result["realized_pnl"] == pytest.approx(500.0)
+
+
+def test_calculate_pnl_fees_per_symbol():
+    trade_log.append_trade(**_sample_trade(symbol="BTC/USDT", side="buy", price=45000.0, amount=0.1, dry_run=False, fee=5.0))
+    trade_log.append_trade(**_sample_trade(symbol="ETH/USDT", side="buy", price=3000.0, amount=1.0, dry_run=False, fee=1.5))
+    result = trade_log.calculate_pnl()
+    assert result["total_fees_paid"] == pytest.approx(6.5)
+    assert result["symbols"]["BTC/USDT"]["total_fees_paid"] == pytest.approx(5.0)
+    assert result["symbols"]["ETH/USDT"]["total_fees_paid"] == pytest.approx(1.5)
+
+
+def test_calculate_pnl_fees_excluded_for_dry_run():
+    # Dry-run trades should not contribute to total_fees_paid
+    trade_log.append_trade(**_sample_trade(side="buy", price=45000.0, amount=0.1, dry_run=True, fee=99.0))
+    result = trade_log.calculate_pnl()
+    assert result["total_fees_paid"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
 # Concurrent-write stress tests
 # ---------------------------------------------------------------------------
 

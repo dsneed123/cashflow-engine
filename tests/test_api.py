@@ -94,3 +94,32 @@ def test_cors_headers_present():
     resp = client.get("/health", headers={"Origin": "https://example.com"})
     assert resp.status_code == 200
     assert "access-control-allow-origin" in resp.headers
+
+
+def test_scheduler_status_not_running():
+    """Scheduler is not running when TRADING_ENABLED is not set."""
+    resp = client.get("/scheduler/status")
+    assert resp.status_code == 200
+    assert resp.json() == {"running": False, "next_run": None}
+
+
+def test_scheduler_status_running(monkeypatch):
+    """Scheduler starts and reports running when TRADING_ENABLED=true."""
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("CYCLE_INTERVAL_SECONDS", "300")
+    with TestClient(app) as c:
+        resp = c.get("/scheduler/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["running"] is True
+    assert data["next_run"] is not None
+
+
+def test_scheduler_reset_after_lifespan(monkeypatch):
+    """Scheduler global is reset to None after lifespan exits."""
+    from cashflow_engine.api import app as app_module
+
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    with TestClient(app):
+        pass
+    assert app_module._scheduler is None
