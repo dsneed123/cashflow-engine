@@ -9,6 +9,7 @@ description = "Automated ethical money-making SaaS platform with trading, arbitr
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "apscheduler>=3.10,<4",
     "ccxt>=4.0",
     "fastapi>=0.111",
     "filelock>=3.0",

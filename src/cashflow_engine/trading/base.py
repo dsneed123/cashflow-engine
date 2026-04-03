@@ -32,6 +32,7 @@ class ExchangeClient:
         if self.dry_run:
             ticker = self.fetch_ticker(symbol)
             price = ticker["last"]
+            fee = price * amount * 0.001
             return {
                 "id": "dry-run",
                 "symbol": symbol,
@@ -39,8 +40,11 @@ class ExchangeClient:
                 "amount": amount,
                 "price": price,
                 "status": "simulated",
+                "fee_cost": fee,
             }
-        return self.exchange.create_market_order(symbol, side, amount)
+        order = self.exchange.create_market_order(symbol, side, amount)
+        order["fee_cost"] = (order.get("fee") or {}).get("cost") or 0.0
+        return order
 
     def get_positions(self) -> list[dict]:
         if self.dry_run:
@@ -86,6 +90,7 @@ class TradingModule:
                 exchange=self.config.exchange_id,
                 dry_run=self.config.dry_run,
                 order_id=order.get("id"),
+                fee=order.get("fee_cost", 0.0),
             )
 
             return {

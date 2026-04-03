@@ -46,6 +46,7 @@ def append_trade(
     exchange: str,
     dry_run: bool,
     order_id: str | None = None,
+    fee: float | None = None,
 ) -> dict[str, Any]:
     """Append a trade record to trades.json and return the record."""
     record: dict[str, Any] = {
@@ -58,6 +59,7 @@ def append_trade(
         "exchange": exchange,
         "dry_run": dry_run,
         "order_id": order_id,
+        "fee": fee,
     }
     path = _get_path()
     with FileLock(str(path.with_suffix(".lock"))):
@@ -92,6 +94,8 @@ def calculate_pnl(symbol: str | None = None) -> dict[str, Any]:
     dry_run_count = sum(1 for r in scoped if r.get("dry_run"))
     live = [r for r in scoped if not r.get("dry_run")]
 
+    total_fees = sum(float(r.get("fee") or 0.0) for r in live)
+
     # Per-symbol buy queues: deque of [remaining_amount, buy_price]
     buy_queues: dict[str, deque] = {}
     symbol_stats: dict[str, dict] = {}
@@ -111,7 +115,9 @@ def calculate_pnl(symbol: str | None = None) -> dict[str, Any]:
                 "trade_count": 0,
                 "wins": 0,
                 "losses": 0,
+                "fees": 0.0,
             }
+        symbol_stats[sym]["fees"] += float(trade.get("fee") or 0.0)
 
         symbol_stats[sym]["trade_count"] += 1
 
@@ -158,7 +164,8 @@ def calculate_pnl(symbol: str | None = None) -> dict[str, Any]:
     )
 
     result: dict[str, Any] = {
-        "realized_pnl": round(total_realized, 8),
+        "realized_pnl": round(total_realized - total_fees, 8),
+        "total_fees_paid": round(total_fees, 8),
         "unrealized_value": round(total_unrealized, 8),
         "trade_count": len(live),
         "dry_run_count": dry_run_count,
@@ -170,7 +177,8 @@ def calculate_pnl(symbol: str | None = None) -> dict[str, Any]:
     if symbol is None:
         result["symbols"] = {
             sym: {
-                "realized_pnl": round(stats["realized_pnl"], 8),
+                "realized_pnl": round(stats["realized_pnl"] - stats["fees"], 8),
+                "total_fees_paid": round(stats["fees"], 8),
                 "unrealized_amount": stats["unrealized_amount"],
                 "unrealized_value": round(stats["unrealized_value"], 8),
                 "trade_count": stats["trade_count"],
